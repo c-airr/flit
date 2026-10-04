@@ -1,6 +1,6 @@
 # flit v1 – design
 
-Date: 2026-10-04 · Status: draft, awaiting author review
+Date: 2026-10-04 · Status: approved by the author (2026-10-04)
 
 ## 1. Purpose
 
@@ -43,43 +43,58 @@ Windows. Only `backend/gio` needs cgo, and only on Linux.
 ## 3. The drawing boundary (`draw`)
 
 All coordinates are **absolute logical pixels** (`float32`). The backend
-multiplies them by the DPI scale. The list is flat: plain structs with no
-Go pointers, so it can later be passed to C/C++ unchanged.
+multiplies them by the DPI scale. The list is **flat in its native form**:
+two plain arrays and no Go pointers inside elements. A C/C++ backend gets
+`Cmds` and `TextBuf` as they are, with no conversion step and no copy.
 
 ```go
-type Rect struct{ X, Y, W, H float32 }
-type RGBA struct{ R, G, B, A uint8 } // straight (non-premultiplied) alpha
+// FormatVersion changes whenever Cmd's layout or meaning changes.
+// A backend must refuse a List whose Version it does not know.
+const FormatVersion uint32 = 1
 
-type Kind uint8
+type Rect struct{ X, Y, W, H float32 }
+type RGBA struct{ R, G, B, A uint8 } // straight (non-premultiplied) alpha; same bytes as C's uint8_t[4]
+
+type Kind uint32
 const (
-    FillRect Kind = iota // Rect, Color, Radius
-    StrokeRect           // Rect, Color, Radius, Width
-    Text                 // Rect (top-left + max width), Color, Text, Font
-    PushClip             // Rect, Radius
+    FillRect   Kind = iota + 1 // Rect, Color, Radius   (0 is reserved as "invalid")
+    StrokeRect                 // Rect, Color, Radius, Width
+    Text                       // Rect (X,Y top-left; W max width, 0 = unlimited), Color, TextOff/TextLen, Font
+    PushClip                   // Rect, Radius
     PopClip
 )
 
 type FontStyle struct {
     Size   float32
-    Weight uint16 // 400 regular, 600 semibold, ...
+    Weight uint32 // 400 regular, 600 semibold, ...
 }
 
+// Cmd has a fixed layout with no padding: every field is 4 bytes wide
+// (RGBA is 4 × uint8) and the struct is exactly 48 bytes. A compile-time
+// assertion plus an offset test fail the build if that ever changes.
+// The C++ side mirrors it with a plain struct and a static_assert.
 type Cmd struct {
-    Kind   Kind
-    Rect   Rect
-    Color  RGBA
-    Radius float32
-    Width  float32
-    Text   int32 // index into List.Texts, -1 if unused
-    Font   FontStyle
-}
+    Kind    Kind      //  0
+    Rect    Rect      //  4
+    Color   RGBA      // 20
+    Radius  float32   // 24
+    Width   float32   // 28
+    TextOff uint32    // 32  byte offset into List.TextBuf
+    TextLen uint32    // 36  byte length; text is UTF-8, not NUL-terminated
+    Font    FontStyle // 40
+}                     // 48
 
 type List struct {
-    Cmds  []Cmd
-    Texts []string
+    Version uint32 // set to FormatVersion by Reset
+    Cmds    []Cmd
+    TextBuf []byte // all text of the frame, back to back (UTF-8)
 }
 // Methods: FillRect, StrokeRect, Text, PushClip, PopClip append a command.
-// Reset() truncates both slices but keeps their capacity (no per-frame allocs).
+// Reset() sets Version and truncates both slices but keeps their capacity
+// (no per-frame allocations once the buffers have grown).
+// TextOf(cmd) returns the cmd's text as a string.
+// String() prints the list in human-readable form, one command per line;
+// it is what golden tests and fmt.Println use, so raw bytes never have to be read.
 
 type TextMeasurer interface {
     // Measure returns the size of text laid out with the given style.
@@ -150,7 +165,7 @@ so the types are named `TextWidget`, `ColumnWidget`, and so on.
 not a composite. Its hover/pressed state lives in its node. A composite button
 would need component-local state, which is postponed until after v1. Once
 local state exists, Button can become a composite of Container + Text +
-a gesture widget without any API change.
+a gesture widget without any API change. This is temporary (§11).
 
 ## 5. State: `Signal[T]`
 
@@ -165,6 +180,11 @@ count.Update(func(v int) int { return v + 1 })
   `Get()` reads it. In C++ terms this is like a `thread_local`. Go has no
   such thing, but it does not need one, because all building happens on the
   UI goroutine.
+- **Single-threaded assumption (v1):** one UI goroutine, **one window**. The
+  tracking variable is shared by the whole package, so two goroutines
+  building at the same time would corrupt each other's dependencies. In Gio
+  every window has its own goroutine, so a second window would break this.
+  Multiple windows need per-app tracking (listed in §11).
 - Before a rebuild, a node drops all its subscriptions and records them again,
   so dependencies can change between builds (e.g. behind an `if`).
 - `Set` always notifies, without an equality check, so `T` can be any type
@@ -194,10 +214,13 @@ app.Frame(viewport Size, m draw.TextMeasurer, out *draw.List) // UI goroutine
 app.NeedsFrame() bool
 ```
 
-`Post` appends to a mutex-protected queue and calls the wakeup function.
-A mutex queue is used instead of a channel so that `Post` never blocks,
-even with many pending calls. The queue is drained at the start of
-`Frame` and `Pointer`.
+`Post` appends to a mutex-protected queue and then **always** calls the
+wakeup function (`window.Invalidate()` in the Gio backend). Without the
+wakeup an idle window would never notice the new work. A mutex queue is used
+instead of a channel so that `Post` never blocks. The queue is drained at
+the start of `Frame` and `Pointer`.
+The queue is **unbounded** in v1, so a goroutine posting faster than the UI
+drains will grow memory without limit. This is a known limitation (§11).
 
 **Frame pipeline** (runs only when something is dirty or the window changed):
 1. Drain the `Post` queue.
@@ -236,12 +259,15 @@ with `OFL.txt` next to the font files.
 ## 8. Gio backend (`backend/gio`)
 
 ```go
-func Run(app *ui.App, opts Options) error // Options{Title string; Width, Height float32}
+// Run opens the window and runs the app. It blocks and must be called from
+// main (the main goroutine), because Gio's app.Main must own the main OS
+// thread. When the window is closed, Run ends the process with os.Exit,
+// so deferred calls in main do not run.
+func Run(app *ui.App, opts Options) // Options{Title string; Width, Height float32}
 ```
 
-- Gio requires `app.Main()` on the main goroutine. `Run` starts the window
-  loop in a goroutine, which becomes flit's UI goroutine, and then calls
-  `app.Main()`.
+- `Run` starts the window loop in a new goroutine, which becomes flit's UI
+  goroutine, and then calls `app.Main()`, which does not return.
 - `SetWakeup` is wired to `window.Invalidate()`, which is goroutine-safe.
 - On each `FrameEvent`: convert pointer events from a full-window input area
   into `ui.PointerEvent` (px → dp), call `app.Frame`, then translate the list:
@@ -253,7 +279,8 @@ func Run(app *ui.App, opts Options) error // Options{Title string; Width, Height
 
 ## 9. Testing
 
-- `draw`: list building and Reset.
+- `draw`: list building, Reset (keeps capacity, sets Version), TextOf,
+  String output, and `Cmd`'s layout (size 48, field offsets as in §3).
 - `ui` layout: table-driven tests per widget against `fakebackend`
   (every character is 8 × 16 px).
 - `ui` paint: golden tests that build a small tree, run `Frame` and compare
@@ -273,6 +300,10 @@ func Run(app *ui.App, opts Options) error // Options{Title string; Width, Height
    `Text`, `Padding`, `Container`.
 3. `Row` / `Column`.
 4. Painting into `draw.List`, including clips.
+   - **Spike (throwaway):** `examples/spike-gio` opens a Gio window and draws
+     a hand-built `draw.List` (rounded rects, a stroke, text in Inter, a clip),
+     so the author can see the look before step 7. It is not part of the
+     library API. Step 7 replaces it.
 5. `Signal[T]`, dirty rebuilds, `Post`, `Async`.
 6. Pointer input, `Button`, `Theme`.
 7. `backend/gio`, `Run`, `examples/counter`.
@@ -281,3 +312,34 @@ func Run(app *ui.App, opts Options) error // Options{Title string; Width, Height
 After v1, the next step is a minimal C++ backend (clang via llvm-mingw,
 rectangles only, one `extern "C"` call per frame), to prove the boundary
 can be swapped.
+
+## 11. Known limitations and post-v1 rewrites
+
+| Item | v1 state | After v1 |
+|---|---|---|
+| `Button` | render widget that draws itself, hover/pressed in its node | **rewrite** as a composite (Container + Text + gesture) once component-local state exists |
+| Threading | one UI goroutine, one window (package-level tracking variable) | per-app tracking to allow multiple windows |
+| `Post` queue | unbounded | consider a bound or coalescing if it becomes a problem |
+| Layout / paint | whole tree every dirty frame | relayout boundaries, paint caching, if profiling asks for it |
+| Reconciliation | by index + type | keys |
+
+## 12. Embedding (after v1)
+
+- **Goal:** use flit from C++ and Python. C++ links it like an ordinary C
+  library, and Python loads it with ctypes or cffi.
+- **Mechanism:** a thin `-buildmode=c-shared` layer (`.dll`/`.so` + a C
+  header). Built after v1, not now.
+- **Rules already in force in v1:** a flat API at the boundary (handles/IDs
+  instead of pointers, plain structs, byte buffers), and no Go pointers that
+  contain Go pointers ever cross it. `draw.List` already follows this.
+- **Events:** callbacks across the C boundary are awkward (C → Go → C
+  re-entry, lifetimes), so the flat API delivers events as a **queue the
+  host polls**, e.g. "button with handle 7 was clicked". This applies only
+  to the flat embedding API. The Go API keeps plain functions
+  (`ui.Button("+", fn)`), so writing apps in Go does not change.
+- **Main thread:** the window loop must run on the process's main thread.
+  In a Go program, `gio.Run` from `main` takes care of that. In a c-shared
+  library Go does not own `main`, so the host must call the exported run
+  function from its own main thread, and that call blocks.
+- **Wrappers:** a comfortable API (e.g. Pythonic classes) is a separate,
+  thin layer on top of the flat API, not part of the core.
