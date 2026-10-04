@@ -291,7 +291,7 @@ func Run(app *ui.App, opts Options) // Options{Title string; Width, Height float
 - Input: synthetic `PointerEvent`s check hover, pressed and click on `Button`.
 - Backend: manual check with `examples/counter` on Windows. Linux via GitHub
   Actions (ubuntu, `go vet` + `go test`) once the author creates the repo,
-  until then `offload run -- go test ./...` on zap.
+  until then `go test ./...` on any Linux machine.
 
 ## 10. Implementation order (each step: tests green, commit)
 
