@@ -6,10 +6,6 @@ import (
 	"github.com/c-airr/flit/internal/fakebackend"
 )
 
-func testEnv() *env {
-	return &env{measurer: fakebackend.Measurer{}, theme: DefaultTheme()}
-}
-
 func newTestTree(root Widget) *tree {
 	return newTree(root, fakebackend.Measurer{}, DefaultTheme())
 }

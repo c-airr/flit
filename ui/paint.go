@@ -7,7 +7,7 @@ import "github.com/c-airr/flit/draw"
 func paintNode(n *node, e *env, parentOrigin Point, out *draw.List) {
 	origin := Point{X: parentOrigin.X + n.offset.X, Y: parentOrigin.Y + n.offset.Y}
 	switch w := n.widget.(type) {
-	case BuildWidget:
+	case composite:
 		paintChildren(n, e, origin, out)
 	case renderWidget:
 		w.paint(n, e, origin, out)

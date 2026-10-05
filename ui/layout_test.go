@@ -7,10 +7,9 @@ import "testing"
 
 // layoutUnder mounts w on its own and lays it out under c.
 func layoutUnder(w Widget, c Constraints) *node {
-	e := testEnv()
-	n := mount(w, nil, e)
-	layoutNode(n, e, c)
-	return n
+	tr := newTestTree(w)
+	layoutNode(tr.root, &tr.env, c)
+	return tr.root
 }
 
 func TestTextLayout(t *testing.T) {

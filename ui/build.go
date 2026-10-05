@@ -17,14 +17,21 @@ type BuildWidget struct {
 	fn func(ctx *Ctx) Widget
 }
 
-// Build makes a composite widget. fn runs when the widget is mounted and
-// on every rebuild, and returns the widget tree to show; it may return nil.
+var _ composite = BuildWidget{}
+
+// Build makes a composite widget. fn runs when the widget is mounted, on
+// every rebuild of an ancestor, and whenever a signal it read changes. It
+// returns the widget tree to show; it may return nil.
 //
 //	ui.Build(func(ctx *ui.Ctx) ui.Widget {
-//		return ui.Text("Hello").Color(ctx.Theme().Primary)
+//		return ui.Text(strconv.Itoa(count.Get())).Color(ctx.Theme().Primary)
 //	})
 func Build(fn func(ctx *Ctx) Widget) BuildWidget {
 	return BuildWidget{fn: fn}
 }
 
 func (BuildWidget) isWidget() {}
+
+func (w BuildWidget) build(_ *node, ctx *Ctx) Widget {
+	return w.fn(ctx)
+}
