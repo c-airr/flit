@@ -67,6 +67,19 @@ func clamp(v, lo, hi float32) float32 {
 	return min(max(v, lo), hi)
 }
 
+func isInf(v float32) bool {
+	return math.IsInf(float64(v), 1)
+}
+
+// finiteOr returns v, or fallback when v is Inf. Layout uses it so that an
+// unbounded constraint never leaks out as an Inf size.
+func finiteOr(v, fallback float32) float32 {
+	if isInf(v) {
+		return fallback
+	}
+	return v
+}
+
 // Insets are the space on each side of a box, in CSS order.
 type Insets struct {
 	Top, Right, Bottom, Left float32
