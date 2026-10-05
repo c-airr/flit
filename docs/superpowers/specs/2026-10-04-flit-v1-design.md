@@ -1,6 +1,8 @@
 # flit v1 – design
 
-Date: 2026-10-04 · Status: approved by the author (2026-10-04)
+Date: 2026-10-04 · Status: approved by the author (2026-10-04); amended
+2026-10-05 with the author's decisions on units (dp), borders (inside),
+cursors (system only in v1) and `Pressable`
 
 ## 1. Purpose
 
@@ -12,7 +14,12 @@ later without rewriting the core.
 
 Non-goals for v1: animations, hot reload, keyboard input, text fields,
 scrolling, images, flex/Expanded, component-local state, keys, dark theme,
-c-shared embedding, any C++ code.
+c-shared embedding, custom cursor images, any C++ code.
+
+**Look is the app author's choice.** Like Flutter or WPF, and unlike Fyne,
+flit does not force one look: every visual widget takes style options, and
+`Pressable` lets an app draw an interactive element any way it likes. The
+theme only supplies good defaults for options that are not set.
 
 ## 2. Architecture overview
 
@@ -58,7 +65,7 @@ type RGBA struct{ R, G, B, A uint8 } // straight (non-premultiplied) alpha; same
 type Kind uint32
 const (
     FillRect   Kind = iota + 1 // Rect, Color, Radius   (0 is reserved as "invalid")
-    StrokeRect                 // Rect, Color, Radius, Width
+    StrokeRect                 // Rect, Color, Radius, Width; the stroke lies entirely inside Rect
     Text                       // Rect (X,Y top-left; W max width, 0 = unlimited), Color, TextOff/TextLen, Font
     PushClip                   // Rect, Radius
     PopClip
@@ -123,10 +130,12 @@ type Widget interface{ isWidget() }
 ```
 
 ### Kinds of widgets
-- **Composite**: `ui.Build(func(ctx *ui.Ctx) ui.Widget)` is how users write
-  components. Build functions run with dependency tracking (§5).
+- **Composite**: produces one child by running code, with dependency
+  tracking (§5); layout and paint pass straight through to the child.
+  `ui.Build(func(ctx *ui.Ctx) ui.Widget)` is how users write components;
+  `Pressable` and `Button` are composites too.
 - **Render widgets** (built-ins): implement an unexported interface with
-  `children()`, `layout(...)`, `paint(...)` and an optional `pointer(...)`.
+  `children()`, `layout(...)` and `paint(...)`.
 
 ### Reconciliation
 When a node rebuilds, its new child widgets are matched against the existing
@@ -159,13 +168,31 @@ so the types are named `TextWidget`, `ColumnWidget`, and so on.
 | `Padding` | shrinks constraints by insets, adds them back to the child's size | children only |
 | `Container` | optional fixed `Width`/`Height`, else child size (or max if no child) | `FillRect` (+ `StrokeRect` if a border is set) |
 | `Row` / `Column` | children laid out loosely along the main axis; `MainAlign` (Start, Center, End, SpaceBetween), `CrossAlign` (Start, Center, End, Stretch), `Gap` | children only |
-| `Button` | text + theme padding | rounded rect, color from state (normal/hover/pressed), text |
+| `Pressable` | its child's | its child's |
+| `Button` | a `Pressable` around Container + Padding + Text | its child's |
 
-**Change from the planning discussion:** `Button` is a *render widget* in v1,
-not a composite. Its hover/pressed state lives in its node. A composite button
-would need component-local state, which is postponed until after v1. Once
-local state exists, Button can become a composite of Container + Text +
-a gesture widget without any API change. This is temporary (§11).
+**`Pressable` is the interaction primitive.** It keeps hover/pressed state in
+its node and rebuilds its child through a function whenever that state
+changes, so the app decides what every state looks like:
+
+```go
+ui.Pressable(func(ctx *ui.Ctx, s ui.PressState) ui.Widget {
+    bg := ctx.Theme().Primary
+    if s.Hovered { bg = ctx.Theme().PrimaryHover }
+    return ui.Container(ui.Text("+")).Background(bg).Radius(12)
+}).OnClick(fn).Cursor(ui.CursorPointer)
+```
+
+`ui.Button(label, fn)` is a ready-made composite on top of `Pressable`. Every
+part of its look is an option (`Background`, `HoverBackground`,
+`PressedBackground`, `TextColor`, `Radius`, `Padding`, `FontSize`, `Weight`);
+unset options come from the theme.
+
+**Cursors:** `Pressable` sets the mouse cursor while hovered (default
+`CursorPointer`). v1 has system cursors only (`CursorDefault`,
+`CursorPointer`, `CursorText`, `CursorCrosshair`, `CursorGrab`,
+`CursorNotAllowed`); the zero `Cursor` means "not set". Cursors made from
+images come after v1 (§11).
 
 ## 5. State: `Signal[T]`
 
@@ -176,7 +203,7 @@ count.Set(5)             // UI goroutine only; marks subscribers dirty, wakes th
 count.Update(func(v int) int { return v + 1 })
 ```
 
-- **Tracking:** a package-level variable holds "the node currently building".
+- **Tracking:** a package-level variable holds "the composite node currently building".
   `Get()` reads it. In C++ terms this is like a `thread_local`. Go has no
   such thing, but it does not need one, because all building happens on the
   UI goroutine.
@@ -222,20 +249,36 @@ the start of `Frame` and `Pointer`.
 The queue is **unbounded** in v1, so a goroutine posting faster than the UI
 drains will grow memory without limit. This is a known limitation (§11).
 
-**Frame pipeline** (runs only when something is dirty or the window changed):
+`Post` is the only thing that calls the wakeup. Everything else that changes
+state (pointer handlers, posted functions) runs while the backend is already
+handling a frame, and the backend calls `Frame` right after. After `Frame`
+the backend asks `NeedsFrame()` (true while dirty nodes or posted functions
+are waiting, e.g. a build that called `Set`) and requests another frame if so.
+
+**Frame pipeline.** The backend calls `Frame` for every frame it draws.
+Frames happen only on input, `Post`, or a window change, so an idle window
+does no work.
 1. Drain the `Post` queue.
 2. Rebuild dirty nodes, shallowest first. A node whose ancestor was just
-   rebuilt is skipped, because that rebuild already handled it.
+   rebuilt is skipped, because that rebuild already handled it. Nodes marked
+   dirty during this step wait for the next frame, so a build that calls
+   `Set` cannot loop forever inside one frame.
 3. Lay out the whole tree with tight constraints equal to the viewport.
 4. Paint the whole tree into `out`, after `out.Reset()`.
 
 Steps 3–4 cover the whole tree in v1. Relayout boundaries and paint caching
 can come later, when profiling shows a need; they do not change the API.
 
-**Input:** `PointerEvent{Kind: Press|Release|Move|Leave, Pos Point}`.
-Hit-testing uses the layout rectangles: the deepest node containing the point
-that handles pointer events gets the event. The app tracks the hovered node
-to produce enter/leave. A click is a press and a release inside the same node.
+**Input:** `PointerEvent{Kind: Press|Release|Move|Leave, Pos Point}` in dp;
+`Leave` means the pointer left the window. Hit-testing uses the rectangles
+from the last layout: the target is the deepest `Pressable` containing the
+point. Later siblings are on top, so they are tested first, and a clipping
+`Container` hides the parts of its subtree outside its bounds. The app tracks
+the hovered and the pressed node. A click is a press and a release on the
+same `Pressable`. A node that gets disposed while hovered or pressed is
+forgotten without a click. `App.Cursor()` returns the cursor of the hovered
+`Pressable`, or `CursorDefault`. Pointer events that arrive before the first
+`Frame` are ignored.
 
 ## 7. Theme and look
 
@@ -256,6 +299,10 @@ builds, internally when painting), so an unstyled tree already looks
 finished. Font: **Inter 4.1**, embedded with `go:embed` in `backend/gio`,
 with `OFL.txt` next to the font files.
 
+**Units:** font sizes are in dp like every other size. The operating
+system's separate text-scale setting is ignored in v1, so text and layout
+always scale together and a measured size always matches the drawn one.
+
 ## 8. Gio backend (`backend/gio`)
 
 ```go
@@ -271,10 +318,15 @@ func Run(app *ui.App, opts Options) // Options{Title string; Width, Height float
 - `SetWakeup` is wired to `window.Invalidate()`, which is goroutine-safe.
 - On each `FrameEvent`: convert pointer events from a full-window input area
   into `ui.PointerEvent` (px → dp), call `app.Frame`, then translate the list:
-  `FillRect` → `clip.RRect` + `paint.Fill`, `StrokeRect` → `clip.Stroke`,
+  `FillRect` → `clip.RRect` + `paint.Fill`, `StrokeRect` → `clip.Stroke` on a
+  rectangle inset by half the width (so the stroke stays inside),
   `Text` → shaped text with the same `text.Shaper` used by the measurer,
-  `PushClip`/`PopClip` → a `clip` stack.
-- The measurer wraps Gio's `text.Shaper` loaded with Inter.
+  `PushClip`/`PopClip` → a `clip` stack. Set the cursor from `app.Cursor()`.
+  If `app.NeedsFrame()`, call `Invalidate`.
+- Sp is pinned to dp (`PxPerSp = PxPerDp`), see §7.
+- The measurer wraps Gio's `text.Shaper` loaded with Inter only (no system
+  fonts) and measures by laying the text out exactly the way it is drawn,
+  into scratch ops, so measuring and drawing cannot disagree.
 - The Gio version is pinned in `go.mod` (v0.10.x).
 
 ## 9. Testing
@@ -288,7 +340,8 @@ func Run(app *ui.App, opts Options) // Options{Title string; Width, Height float
 - Signals: build-counter tests prove that after `Set` **only the dependent
   node rebuilds**, and that a disposed node is unsubscribed. Run with
   `go test -race`.
-- Input: synthetic `PointerEvent`s check hover, pressed and click on `Button`.
+- Input: synthetic `PointerEvent`s check hover, pressed, click and cursor on
+  `Pressable`, and the look of `Button` in each state.
 - Backend: manual check with `examples/counter` on Windows. Linux via GitHub
   Actions (ubuntu, `go vet` + `go test`) once the author creates the repo,
   until then `go test ./...` on any Linux machine.
@@ -305,7 +358,7 @@ func Run(app *ui.App, opts Options) // Options{Title string; Width, Height float
      so the author can see the look before step 7. It is not part of the
      library API. Step 7 replaces it.
 5. `Signal[T]`, dirty rebuilds, `Post`, `Async`.
-6. Pointer input, `Button`, `Theme`.
+6. Pointer input, `Pressable`, cursors, `Button`.
 7. `backend/gio`, `Run`, `examples/counter`.
 8. Linux CI.
 
@@ -317,7 +370,7 @@ can be swapped.
 
 | Item | v1 state | After v1 |
 |---|---|---|
-| `Button` | render widget that draws itself, hover/pressed in its node | **rewrite** as a composite (Container + Text + gesture) once component-local state exists |
+| Cursors | system cursors only | a cursor creator (cursors from images), written in C++ behind a flat boundary, since Gio has no API for it |
 | Threading | one UI goroutine, one window (package-level tracking variable) | per-app tracking to allow multiple windows |
 | `Post` queue | unbounded | consider a bound or coalescing if it becomes a problem |
 | Layout / paint | whole tree every dirty frame | relayout boundaries, paint caching, if profiling asks for it |
