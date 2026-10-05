@@ -1,5 +1,7 @@
 package ui
 
+import "github.com/c-airr/flit/draw"
+
 // PaddingWidget puts empty space around its child. Create it with Padding.
 type PaddingWidget struct {
 	insets Insets
@@ -34,4 +36,8 @@ func (w PaddingWidget) layout(n *node, e *env, c Constraints) Size {
 		child.offset = Point{X: in.Left, Y: in.Top}
 	}
 	return c.Constrain(Size{W: inner.W + in.Left + in.Right, H: inner.H + in.Top + in.Bottom})
+}
+
+func (PaddingWidget) paint(n *node, e *env, origin Point, out *draw.List) {
+	paintChildren(n, e, origin, out)
 }

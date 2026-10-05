@@ -55,6 +55,20 @@ func (w TextWidget) layout(n *node, e *env, c Constraints) Size {
 	return c.Constrain(e.measurer.Measure(w.text, w.style(e.theme), maxW))
 }
 
+// paint emits one Text command. Its W is the max width used for measuring,
+// not the measured width, so the renderer wraps at the same place.
+func (w TextWidget) paint(n *node, e *env, origin Point, out *draw.List) {
+	// The two-value form of a type assertion does not panic: ok is false
+	// and maxW is 0 if state holds no float32 (layout has not run).
+	maxW, _ := n.state.(float32)
+	r := draw.Rect{X: origin.X, Y: origin.Y, W: maxW, H: n.size.H}
+	c := w.color
+	if c == (draw.RGBA{}) {
+		c = e.theme.Text
+	}
+	out.Text(r, w.text, c, w.style(e.theme))
+}
+
 func (w TextWidget) style(th Theme) draw.FontStyle {
 	s := draw.FontStyle{Size: w.fontSize, Weight: w.weight}
 	if s.Size == 0 {

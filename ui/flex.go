@@ -1,5 +1,7 @@
 package ui
 
+import "github.com/c-airr/flit/draw"
+
 // Align says where children go along an axis.
 type Align int
 
@@ -145,6 +147,10 @@ func (w FlexWidget) layout(n *node, e *env, c Constraints) Size {
 		pos += m + gap
 	}
 	return w.size(mainSize, crossSize)
+}
+
+func (FlexWidget) paint(n *node, e *env, origin Point, out *draw.List) {
+	paintChildren(n, e, origin, out)
 }
 
 // axes splits a size into its main and cross parts. Go functions can

@@ -91,3 +91,22 @@ func (w ContainerWidget) layout(n *node, e *env, c Constraints) Size {
 	}
 	return Size{W: finiteOr(cc.MaxW, cc.MinW), H: finiteOr(cc.MaxH, cc.MinH)}
 }
+
+// paint draws the background, then the clipped child, then the border on
+// top, so the child never covers the border.
+func (w ContainerWidget) paint(n *node, e *env, origin Point, out *draw.List) {
+	r := bounds(n, origin)
+	if w.background.A > 0 {
+		out.FillRect(r, w.background, w.radius)
+	}
+	if w.clip {
+		out.PushClip(r, w.radius)
+	}
+	paintChildren(n, e, origin, out)
+	if w.clip {
+		out.PopClip()
+	}
+	if w.borderWidth > 0 {
+		out.StrokeRect(r, w.borderColor, w.radius, w.borderWidth)
+	}
+}

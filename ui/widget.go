@@ -22,9 +22,13 @@ type renderWidget interface {
 	// layout sizes the widget under c. It lays out n.children, sets their
 	// offsets and returns its own size; layoutNode stores it in n.size.
 	layout(n *node, e *env, c Constraints) Size
+	// paint appends the widget's draw commands to out. origin is n's
+	// top-left corner in absolute coordinates; children are painted with
+	// paintChildren.
+	paint(n *node, e *env, origin Point, out *draw.List)
 }
 
-// env is what layout needs from outside the tree.
+// env is what layout and paint need from outside the tree.
 type env struct {
 	measurer draw.TextMeasurer
 	theme    Theme
