@@ -19,6 +19,9 @@ type App struct {
 	tree         *tree // created by the first Frame, which has a measurer
 	themeChanged bool
 
+	hover   *node // the Pressable under the pointer
+	pressed *node // the Pressable a press started on
+
 	// mu guards the fields below it, which other goroutines touch through
 	// Post. sync.Mutex is like std::mutex; its zero value is unlocked and
 	// ready to use, so it needs no constructor.
