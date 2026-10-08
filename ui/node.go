@@ -34,6 +34,8 @@ type node struct {
 
 	hooks      []hookSlot // component-local state, in hook call order
 	hooksKnown bool       // a build has completed, so the slot count is fixed
+
+	warned bool // a debug warning was logged for this node already
 }
 
 // composite is implemented by widgets that produce one child by running

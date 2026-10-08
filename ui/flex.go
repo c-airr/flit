@@ -100,15 +100,58 @@ func (w FlexWidget) layout(n *node, e *env, c Constraints) Size {
 	}
 	childC := w.constraints(0, Inf, childMinCross, maxCross)
 
-	var total, widest float32
+	// Find the flex children (Expanded, possibly inside composites). With
+	// an unbounded main axis there is no "rest of the space" to share, so
+	// they are laid out like ordinary children.
+	bounded := !isInf(maxMain)
+	flexes := make([]int, len(n.children))
+	totalFlex := 0
 	for i, child := range n.children {
-		m, x := w.axes(layoutNode(child, e, childC))
-		total += m
-		if i > 0 {
-			total += w.gap
+		f := flexOf(child)
+		if f > 0 && !bounded {
+			warnOnce(child, warnUnbounded)
+			f = 0
 		}
+		flexes[i] = f
+		totalFlex += f
+	}
+	gaps := w.gap * float32(max(0, len(n.children)-1))
+
+	// Pass 1: the children that keep their own size.
+	var used, widest float32
+	for i, child := range n.children {
+		if flexes[i] > 0 {
+			continue
+		}
+		m, x := w.axes(layoutNode(child, e, childC))
+		used += m
 		widest = max(widest, x)
 	}
+
+	// Pass 2: the flex children share what is left, in proportion to their
+	// flex. The last one gets exactly what the others did not, so the parts
+	// always add up to the rest, whatever float rounding did to the shares.
+	if totalFlex > 0 {
+		remaining := max(0, maxMain-used-gaps)
+		var given float32
+		seen := 0
+		for i, child := range n.children {
+			f := flexes[i]
+			if f == 0 {
+				continue
+			}
+			seen += f
+			share := remaining * float32(f) / float32(totalFlex)
+			if seen == totalFlex {
+				share = max(0, remaining-given)
+			}
+			given += share
+			m, x := w.axes(layoutNode(child, e, w.constraints(share, share, childMinCross, maxCross)))
+			used += m
+			widest = max(widest, x)
+		}
+	}
+	total := used + gaps
 
 	mainSize := maxMain
 	if isInf(maxMain) {
@@ -122,6 +165,9 @@ func (w FlexWidget) layout(n *node, e *env, c Constraints) Size {
 	// When the children overflow, free is 0 rather than negative, so
 	// nothing moves backwards or overlaps; the extra just sticks out.
 	free := max(0, mainSize-total)
+	if totalFlex > 0 {
+		free = 0 // the flex children took it all; MainAlign has nothing to move
+	}
 	pos, gap := float32(0), w.gap
 	switch w.main {
 	case Center:
