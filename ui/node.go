@@ -2,6 +2,7 @@ package ui
 
 import (
 	"cmp"
+	"fmt"
 	"reflect"
 	"slices"
 
@@ -30,6 +31,9 @@ type node struct {
 	dirty    bool         // a signal it read has changed; rebuild in the next frame
 	deps     []dependency // signals read by the last build
 	disposed bool
+
+	hooks      []hookSlot // component-local state, in hook call order
+	hooksKnown bool       // a build has completed, so the slot count is fixed
 }
 
 // composite is implemented by widgets that produce one child by running
@@ -92,6 +96,7 @@ func (n *node) dispose() {
 	n.disposed = true
 	n.parent = nil
 	n.dropDeps()
+	n.hooks = nil
 	for _, c := range n.children {
 		c.dispose()
 	}
@@ -140,16 +145,29 @@ func childWidgets(n *node) []Widget {
 
 // runBuild runs a composite's build with dependency tracking: the old
 // subscriptions are dropped first, so after the build n depends on exactly
-// the signals this build read.
+// the signals this build read. It also checks that the build made as many
+// hook calls as the previous one.
 func runBuild(n *node, w composite) Widget {
 	n.dropDeps()
 	n.dirty = false
+	ctx := &Ctx{env: &n.tree.env, node: n}
 	prev := currentBuild
 	currentBuild = n
 	// defer runs when runBuild returns, even if build panics, so a panic
-	// in user code cannot leave currentBuild pointing at this node.
-	defer func() { currentBuild = prev }()
-	return w.build(n, &Ctx{env: &n.tree.env})
+	// in user code cannot leave currentBuild pointing at this node, and a
+	// Ctx kept by user code stops working either way.
+	defer func() {
+		currentBuild = prev
+		ctx.done = true
+	}()
+	child := w.build(n, ctx)
+	// Only reached when build returned normally: if it panicked, that
+	// panic is the one to report, not a hook count mismatch caused by it.
+	if n.hooksKnown && ctx.next != len(n.hooks) {
+		panic(fmt.Sprintf("ui: this build made %d hook calls, the previous build made %d; %s", ctx.next, len(n.hooks), hookRule))
+	}
+	n.hooksKnown = true
+	return child
 }
 
 // layoutNode lays out n under c, stores the result in n.size and returns it.

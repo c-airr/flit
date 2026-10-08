@@ -1,9 +1,13 @@
 package ui
 
-// Ctx is passed to build functions. It gives access to the app's theme;
-// later it will carry more (the app, component-local state).
+// Ctx is passed to build functions. It gives access to the app's theme
+// and to the component's own state (hooks). A Ctx is valid only while
+// the build it was passed to runs; do not keep it for later.
 type Ctx struct {
-	env *env
+	env  *env
+	node *node // the composite node being built
+	next int   // index of the next hook slot
+	done bool  // the build has returned; hooks panic from now on
 }
 
 // Theme returns the theme the tree is built with.
