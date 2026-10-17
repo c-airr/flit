@@ -4,7 +4,10 @@ A Flutter-style GUI library for Go. You describe the UI as a tree of widgets, ke
 
 It draws with [Gio](https://gioui.org) on Windows and Linux.
 
-<!-- screenshots: docs/screenshots/counter.png, docs/screenshots/todo.png -->
+<p>
+  <img src="docs/screenshots/counter.png" alt="examples/counter" height="240">
+  <img src="docs/screenshots/todo.png" alt="examples/todo" height="240">
+</p>
 
 > **Status: early.** The core works (layout, signals, hooks, buttons, custom interactive widgets), but there are no text fields, scrolling, keyboard input, images or animations yet, and there is no tagged release. The API can still change.
 
